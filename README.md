@@ -33,8 +33,13 @@ Two levels of the same stream:
 | observation    | a session hook    | recorded-when-fired |
 | verdict        | an enforcement layer (e.g. ratchet) | the action it describes was already enforced |
 
-Both are the same `Event` type. A consumer that only ever writes observations
-still speaks the full schema, so the enforcement layer never has to fork it.
+Both are the same stream and the same wire format, written through one package —
+`EmitObservation` and `EmitVerdict`. In Go they are two distinct types, so an
+observation carrying a verdict's `witness` is not a value you can construct
+([ADR 0001](docs/adr/0001-observation-verdict-as-separate-methods.md)); on disk
+they are one line each in one file. A consumer that only ever writes
+observations still speaks the full contract, so the enforcement layer never has
+to fork it.
 
 ## The one rule: dependency direction
 
@@ -71,8 +76,9 @@ event and the contract is a failing check, not a code review comment.
 
 ## The schema
 
-One line per event. Observation and verdict fields share a struct; empty fields
-are omitted.
+One line per event. Observation and verdict share one flat wire shape; empty
+fields are omitted. They are separate types in Go and a single object on disk —
+the split is a Go concern, the line is the contract.
 
 ```json
 {"run_id":"sess-9","seq":7,"ts":"2026-07-15T18:04:22.114Z","kind":"observation","stage":"tool_call","actor":"agent","summary":"Bash: go test ./...","status":"error"}
@@ -147,8 +153,7 @@ Import the package and write verdicts through the same appender:
 log, closeFn, _ := agentlog.Open(".agentlog", runID)
 defer closeFn()
 
-log.Emit(agentlog.Event{
-    Kind:        agentlog.KindVerdict,
+log.EmitVerdict(agentlog.Verdict{
     Gate:        "tests",
     Verdict:     "fail",
     Witness:     "sha256:" + hash,
@@ -158,6 +163,11 @@ log.Emit(agentlog.Event{
     Attrs:       map[string]string{"pkg": "./auth"},
 })
 ```
+
+There is no `Kind` field to set: the method you call *is* the kind. A
+`Verdict` has no `Stage` and an `Observation` has no `Witness`, so the contract's
+I2 (no illegal field mixing) is held by the compiler rather than by a check you
+could forget to run.
 
 Observations and verdicts land in the same daily file, keyed by `run_id`, so the
 enforcement layer's Feedback face reads exactly the stream its Verify face wrote.

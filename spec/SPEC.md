@@ -70,9 +70,12 @@ become a feature rather than a gap:
 - **I1 — required shape** (schema): core fields present; a verdict carries all
   five verdict fields; enums hold; no unknown top-level keys.
 - **I2 — no illegal field mixing** (types): an observation cannot carry
-  `witness`; a verdict cannot carry `stage`. Enforced by the sealed variant in
-  Layer 3 code. (Standard JSON Schema can require fields per branch but not
-  cleanly forbid the other branch's fields; the type system does it for free.)
+  `witness`; a verdict cannot carry `stage`. Enforced in Layer 3 by distinct
+  `Observation` and `Verdict` types: neither declares the other's variant-specific
+  fields, so an illegal combination is not a value the code can construct. (They
+  do share `actor`, `summary` and `attrs`, which I2 never separated.) (Standard JSON
+  Schema can require fields per branch but not cleanly forbid the other
+  branch's fields; the type system does it for free.)
 - **I3 — relational** (conformance tests): `adjudicator != actor` when both are
   present (proposer ≠ ratifier). No cross-field inequality exists in draft
   2020-12, so this is a test, not a schema rule.

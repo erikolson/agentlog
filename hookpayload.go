@@ -13,28 +13,39 @@ type hookPayload struct {
 	ToolResponse json.RawMessage `json:"tool_response"`
 }
 
-// ProjectHookPayload turns a raw PostToolUse payload into an observation Event.
+// Projection is what a hook payload projects to: the Observation to record, and
+// the run id the harness supplied to correlate it.
+//
+// RunID sits beside the Observation rather than inside it because run_id is the
+// logger's to stamp, from Open or New — an Observation never carries one. It is
+// empty when the payload named no session, and the caller decides what to put in
+// its place.
+type Projection struct {
+	Observation Observation
+	RunID       string
+}
+
+// ProjectHookPayload turns a raw PostToolUse payload into a Projection. A hook
+// observes, so an observation is the only thing it can ever produce.
 //
 // It extracts fields *mechanically* — no interpretation, no model call — which
 // is what keeps the logger pure procedural code. Structured input in, known
 // fields out. It is best-effort and never fails on shape: missing or malformed
 // fields become sane defaults so a bad payload degrades the summary rather than
 // crashing the session.
-func ProjectHookPayload(raw []byte) Event {
+func ProjectHookPayload(raw []byte) Projection {
 	var p hookPayload
 	_ = json.Unmarshal(raw, &p) // tolerate anything; zero values are fine
 
-	e := Event{
-		Kind:    KindObservation,
-		Stage:   "tool_call",
-		Actor:   "agent",
-		Summary: summaryFrom(p.ToolName, p.ToolInput),
-		Status:  statusFrom(p.ToolResponse),
+	return Projection{
+		Observation: Observation{
+			Stage:   "tool_call",
+			Actor:   "agent",
+			Summary: summaryFrom(p.ToolName, p.ToolInput),
+			Status:  statusFrom(p.ToolResponse),
+		},
+		RunID: p.SessionID, // the harness-supplied id is what correlates a run
 	}
-	if p.SessionID != "" {
-		e.RunID = p.SessionID // the harness-supplied id is what correlates a run
-	}
-	return e
 }
 
 // summaryFrom pulls a short, reproducible detail from the tool input without

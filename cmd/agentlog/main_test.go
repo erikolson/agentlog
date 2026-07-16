@@ -81,6 +81,124 @@ func attrsOf(t *testing.T, e map[string]any) map[string]any {
 	return a
 }
 
+// The Go types make an illegal event unconstructable. These prove the CLI is
+// not a way around that: a mismatched flag is refused at parse time, and
+// nothing reaches the log.
+func TestEmitRejectsCrossKindFlags(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"observation cannot carry witness", []string{"emit", "--kind", "observation", "--witness", "x"}},
+		{"observation cannot carry gate", []string{"emit", "--kind", "observation", "--gate", "tests"}},
+		{"verdict cannot carry stage", []string{"emit", "--kind", "verdict", "--stage", "x"}},
+		{"verdict cannot carry status", []string{"emit", "--kind", "verdict", "--status", "ok"}},
+		{"verdict cannot carry dur-ms", []string{"emit", "--kind", "verdict", "--dur-ms", "5"}},
+		{"unknown kind is refused", []string{"emit", "--kind", "nonsense"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			code, _, events := run(t, "", c.args...)
+			if code == 0 {
+				t.Errorf("want nonzero exit, got 0")
+			}
+			if len(events) != 0 {
+				t.Errorf("a rejected emit must write nothing, got %v", events)
+			}
+		})
+	}
+}
+
+// --actor is shared, and on a verdict it is what keeps I3 checkable. The
+// cross-check must let it through and keep it distinct from --adjudicator.
+func TestEmitVerdictAcceptsActor(t *testing.T) {
+	code, _, events := run(t, "", "emit", "--kind", "verdict", "--gate", "tests",
+		"--verdict", "fail", "--witness", "sha256:9f2c1a", "--actor", "agent",
+		"--adjudicator", "ratchet-check", "--enforce", "block", "--summary", "3 failing in ./auth")
+	if code != 0 {
+		t.Fatalf("a verdict must accept --actor, got exit %d", code)
+	}
+	if len(events) != 1 {
+		t.Fatalf("want 1 event, got %d", len(events))
+	}
+	e := events[0]
+	if e["actor"] != "agent" {
+		t.Errorf("verdict lost actor: %v", e["actor"])
+	}
+	if e["adjudicator"] != "ratchet-check" {
+		t.Errorf("verdict lost adjudicator: %v", e["adjudicator"])
+	}
+	if e["actor"] == e["adjudicator"] {
+		t.Errorf("proposer and ratifier collapsed: %v", e["actor"])
+	}
+}
+
+// Shared flags belong to both kinds; the cross-check must not overreach.
+func TestEmitAllowsSharedFlagsOnBothKinds(t *testing.T) {
+	code, _, events := run(t, "", "emit", "--kind", "verdict", "--gate", "tests",
+		"--verdict", "pass", "--witness", "sha256:abc", "--adjudicator", "ratchet",
+		"--enforce", "block", "--summary", "shared", "--attr", "repo=auth")
+	if code != 0 {
+		t.Fatalf("want exit 0, got %d", code)
+	}
+	if len(events) != 1 {
+		t.Fatalf("want 1 event, got %d", len(events))
+	}
+	if e := events[0]; e["kind"] != "verdict" || e["summary"] != "shared" {
+		t.Errorf("shared flags rejected on a verdict: %v", e)
+	}
+	if a := attrsOf(t, events[0]); a["repo"] != "auth" {
+		t.Errorf("attrs lost on a verdict: %v", a)
+	}
+}
+
+func TestEmitVerdictRoundTrip(t *testing.T) {
+	code, _, events := run(t, "", "emit", "--kind", "verdict", "--gate", "tests",
+		"--verdict", "fail", "--witness", "sha256:9f2c1a", "--adjudicator", "ratchet-check",
+		"--enforce", "block", "--summary", "3 failing in ./auth", "--attr", "pkg=./auth")
+	if code != 0 {
+		t.Fatalf("want exit 0, got %d", code)
+	}
+	if len(events) != 1 {
+		t.Fatalf("want 1 event, got %d", len(events))
+	}
+	e := events[0]
+	for k, want := range map[string]any{
+		"kind": "verdict", "gate": "tests", "verdict": "fail",
+		"witness": "sha256:9f2c1a", "adjudicator": "ratchet-check", "enforce": "block",
+	} {
+		if e[k] != want {
+			t.Errorf("%s: want %v, got %v", k, want, e[k])
+		}
+	}
+	// A verdict must carry none of the observation-only block. actor is not on
+	// that list: both kinds name a proposer.
+	for _, k := range []string{"stage", "status", "dur_ms"} {
+		if _, ok := e[k]; ok {
+			t.Errorf("verdict leaked observation field %q: %v", k, e)
+		}
+	}
+	if a := attrsOf(t, e); a["pkg"] != "./auth" {
+		t.Errorf("attrs lost: %v", a)
+	}
+}
+
+func TestHookExitsZeroOnGarbageStdin(t *testing.T) {
+	code, stdout, events := run(t, "not json at all", "hook")
+	if code != 0 {
+		t.Errorf("hook must exit 0 on garbage stdin, got %d", code)
+	}
+	if stdout != "" {
+		t.Errorf("hook wrote to stdout: %q", stdout)
+	}
+	if len(events) != 1 {
+		t.Fatalf("hook must still record an event, got %d", len(events))
+	}
+	if e := events[0]; e["kind"] != "observation" || e["status"] != "ok" {
+		t.Errorf("want a degraded observation, got %v", e)
+	}
+}
+
 func TestEmitRoundTripsAttrs(t *testing.T) {
 	code, _, events := run(t, "", "emit", "--stage", "tool_call", "--summary", "x",
 		"--status", "ok", "--attr", "repo=auth", "--attr", "severity=high")

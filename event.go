@@ -7,6 +7,12 @@
 // a standalone session hook writes observation events through it. The
 // dependency only ever points one way: consumers depend on agentlog, never the
 // reverse. That keeps this package at pure substrate, portable into any repo.
+//
+// The log carries two kinds of event, and they are two distinct Go types:
+// write an Observation with EmitObservation, a Verdict with EmitVerdict. The
+// stream is heterogeneous on disk, keyed by run_id, but never in Go — every
+// call site knows which kind it is writing at compile time. See
+// docs/adr/0001-observation-verdict-as-separate-methods.md.
 package agentlog
 
 import (
@@ -20,45 +26,85 @@ import (
 	"time"
 )
 
-// Kind distinguishes the two things the log can carry. The split is the
-// substrate/bindingness line drawn inside the schema itself.
+// The two kinds the log can carry — the substrate/bindingness line drawn inside
+// the schema itself. Unexported because kind is never the caller's to choose:
+// it follows from which method you call, so it can never disagree with the
+// payload beside it.
 const (
-	// KindObservation records something that happened. Advisory: you read it
-	// later to debug. This is all a standalone logger ever writes.
-	KindObservation = "observation"
-	// KindVerdict records that a gate adjudicated an artifact. Binding: the
-	// action it describes was already enforced by whoever wrote it. Normally
-	// produced by an enforcement layer, not by a bare session hook.
-	KindVerdict = "verdict"
+	kindObservation = "observation"
+	kindVerdict     = "verdict"
 )
 
-// Event is one line in the log. Observation fields and verdict fields share one
-// struct on purpose: a consumer that only ever writes observations still speaks
-// the full schema, so an enforcement layer never has to fork it.
-type Event struct {
+// Observation records something that happened. Advisory: you read it later to
+// debug. This is all a standalone logger ever writes.
+//
+// It declares no witness, gate, adjudicator or enforce field. That absence is
+// the enforcement: contract invariant I2 (no illegal field mixing) holds
+// because an observation carrying a witness is not a value this package can
+// represent, so it needs no runtime check and admits no bug.
+type Observation struct {
+	Stage   string // collection|llm_call|tool_call|safety|delivery
+	Actor   string // the proposer that produced the event
+	Summary string // enough to reproduce/verify, never the full payload
+	DurMS   int64
+	Status  string // success|error|timeout|fallback|ok
+
+	// Attrs carries domain annotations, string→string: the contract's only
+	// extension point. Empty stays off the wire.
+	Attrs map[string]string
+}
+
+// Verdict records that a gate adjudicated an artifact. Binding: the action it
+// describes was already enforced by whoever wrote it. Normally produced by an
+// enforcement layer, not by a bare session hook.
+//
+// It declares no stage, status or dur_ms field, for the same reason Observation
+// declares no witness: the type system holds I2, not a runtime check. It does
+// declare Actor, which I2 never forbade a verdict: a verdict names both the
+// proposer and the ratifier so that a reader can check I3 (Actor != Adjudicator)
+// over the stream.
+type Verdict struct {
+	Gate        string
+	Verdict     string // pass|fail|waived|error
+	Witness     string // content hash of the adjudicated artifact
+	Actor       string // the proposer whose work was adjudicated
+	Adjudicator string // the ratifier; invariant I3 wants this to differ from Actor
+	Enforce     string // block|warn|record
+	Summary     string // enough to reproduce/verify, never the full payload
+
+	// Attrs carries domain annotations, string→string: the contract's only
+	// extension point. Empty stays off the wire.
+	Attrs map[string]string
+}
+
+// wire is the on-disk shape: one flat object per line, carrying exactly the
+// field names, order and omitempty behavior published in spec/event.schema.json.
+// The public API splits in two, but the contract is one line per event, so both
+// kinds funnel through here.
+//
+// Renaming a tag, reordering a field or dropping an omitempty in this struct
+// changes the published contract, not just this code. The split above is a Go
+// concern; this struct is the promise to every other language.
+type wire struct {
 	RunID string    `json:"run_id"`
 	Seq   uint64    `json:"seq"`
 	TS    time.Time `json:"ts"`
 	Kind  string    `json:"kind"`
 
 	// Observation fields.
-	Stage   string `json:"stage,omitempty"`   // collection|llm_call|tool_call|safety|delivery
-	Actor   string `json:"actor,omitempty"`   // the proposer that produced the event
-	Summary string `json:"summary,omitempty"` // enough to reproduce/verify, never the full payload
+	Stage   string `json:"stage,omitempty"`
+	Actor   string `json:"actor,omitempty"`
+	Summary string `json:"summary,omitempty"`
 	DurMS   int64  `json:"dur_ms,omitempty"`
-	Status  string `json:"status,omitempty"` // success|error|timeout|fallback|ok
+	Status  string `json:"status,omitempty"`
 
-	// Verdict fields. Written by an enforcement layer, not by hand.
+	// Verdict fields.
 	Gate        string `json:"gate,omitempty"`
-	Verdict     string `json:"verdict,omitempty"`     // pass|fail|waived|error
-	Witness     string `json:"witness,omitempty"`     // content hash of the adjudicated artifact
-	Adjudicator string `json:"adjudicator,omitempty"` // the ratifier; must differ from Actor
-	Enforce     string `json:"enforce,omitempty"`     // block|warn|record
+	Verdict     string `json:"verdict,omitempty"`
+	Witness     string `json:"witness,omitempty"`
+	Adjudicator string `json:"adjudicator,omitempty"`
+	Enforce     string `json:"enforce,omitempty"`
 
-	// Attrs carries domain annotations, string→string. It is the contract's
-	// only extension point: a domain annotates here and never adds a top-level
-	// field, which is what lets the core stay frozen. Empty stays off the wire,
-	// so an unannotated event serializes exactly as it did before Attrs existed.
 	Attrs map[string]string `json:"attrs,omitempty"`
 }
 
@@ -90,17 +136,44 @@ func Open(dir, runID string) (*Logger, func() error, error) {
 	return New(f, runID), f.Close, nil
 }
 
-// Emit stamps run id, sequence and timestamp, then appends one JSON line.
-// Seq increments within a single Logger; across separate processes (e.g. one
-// hook invocation per tool call) ordering is carried by TS, not Seq.
-func (l *Logger) Emit(e Event) error {
+// EmitObservation appends one observation to the log.
+func (l *Logger) EmitObservation(o Observation) error {
+	return l.emit(wire{
+		Kind:    kindObservation,
+		Stage:   o.Stage,
+		Actor:   o.Actor,
+		Summary: o.Summary,
+		DurMS:   o.DurMS,
+		Status:  o.Status,
+		Attrs:   o.Attrs,
+	})
+}
+
+// EmitVerdict appends one verdict to the log.
+func (l *Logger) EmitVerdict(v Verdict) error {
+	return l.emit(wire{
+		Kind:        kindVerdict,
+		Gate:        v.Gate,
+		Verdict:     v.Verdict,
+		Witness:     v.Witness,
+		Actor:       v.Actor,
+		Adjudicator: v.Adjudicator,
+		Enforce:     v.Enforce,
+		Summary:     v.Summary,
+		Attrs:       v.Attrs,
+	})
+}
+
+// emit stamps the three fields only the logger owns — run id, sequence and
+// timestamp — then appends one JSON line. Seq increments within a single
+// Logger; across separate processes (e.g. one hook invocation per tool call)
+// ordering is carried by TS, not Seq.
+func (l *Logger) emit(e wire) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.seq++
 	e.Seq = l.seq
-	if e.RunID == "" {
-		e.RunID = l.runID
-	}
+	e.RunID = l.runID
 	e.TS = time.Now().UTC()
 	b, err := json.Marshal(e)
 	if err != nil {

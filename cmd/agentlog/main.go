@@ -20,7 +20,46 @@ import (
 	"github.com/erikolson/agentlog"
 )
 
-var version = "0.1.1"
+var version = "0.2.0"
+
+// The kinds emit routes on. These are CLI vocabulary — the flag value a user
+// types — which happens to match the wire's; the library keeps its own copy
+// unexported because there kind is implied by the method, never chosen.
+const (
+	kindObservation = "observation"
+	kindVerdict     = "verdict"
+)
+
+// In Go an illegal event cannot be constructed: an Observation has no witness
+// field to set. The CLI would be a way around that guarantee if it let one kind
+// carry the other's flags, so it refuses them — before anything is written.
+//
+// --actor is on neither list: both kinds name a proposer. On a verdict it is
+// what makes invariant I3 (actor != adjudicator) checkable by a reader.
+var (
+	observationOnlyFlags = []string{"stage", "status", "dur-ms"}
+	verdictOnlyFlags     = []string{"gate", "verdict", "witness", "adjudicator", "enforce"}
+)
+
+// flagsPassed names the flags actually given on the command line, as opposed to
+// sitting at their zero default. fs.Visit walks only what was set, which is the
+// distinction the cross-check needs: --status "" is still --status.
+func flagsPassed(fs *flag.FlagSet) map[string]bool {
+	passed := make(map[string]bool)
+	fs.Visit(func(f *flag.Flag) { passed[f.Name] = true })
+	return passed
+}
+
+// forbidden returns the named flags that were passed, formatted for a message.
+func forbidden(passed map[string]bool, names []string) []string {
+	var got []string
+	for _, n := range names {
+		if passed[n] {
+			got = append(got, "--"+n)
+		}
+	}
+	return got
+}
 
 // attrFlag collects repeatable --attr key=value flags in the order given.
 type attrFlag []string
@@ -118,9 +157,10 @@ func runHook(args []string) {
 	}
 
 	raw, _ := io.ReadAll(os.Stdin)
-	e := agentlog.ProjectHookPayload(raw) // projection first...
-	e.Attrs = attrs                       // ...then annotations, over no projected field
-	run := e.RunID
+	p := agentlog.ProjectHookPayload(raw) // projection first...
+	o := p.Observation
+	o.Attrs = attrs // ...then annotations, over no projected field
+	run := p.RunID
 	if run == "" {
 		run = agentlog.NewRunID()
 	}
@@ -129,7 +169,9 @@ func runHook(args []string) {
 		fmt.Fprintln(os.Stderr, "agentlog:", err)
 		os.Exit(0)
 	}
-	if err := log.Emit(e); err != nil {
+	// A hook observes; it never adjudicates. EmitObservation is the only
+	// appender it can reach, and the type makes that structural.
+	if err := log.EmitObservation(o); err != nil {
 		fmt.Fprintln(os.Stderr, "agentlog:", err)
 	}
 	// Closed explicitly, not deferred: os.Exit does not run deferred functions.
@@ -141,7 +183,7 @@ func runHook(args []string) {
 
 func runEmit(args []string) {
 	fs := flag.NewFlagSet("emit", flag.ExitOnError)
-	kind := fs.String("kind", agentlog.KindObservation, "observation|verdict")
+	kind := fs.String("kind", kindObservation, "observation|verdict")
 	stage := fs.String("stage", "", "collection|llm_call|tool_call|safety|delivery")
 	actor := fs.String("actor", "", "proposer that produced the event")
 	summary := fs.String("summary", "", "short summary; enough to reproduce/verify, not the payload")
@@ -168,6 +210,27 @@ func runEmit(args []string) {
 		os.Exit(1)
 	}
 
+	// Route on kind, refusing the other kind's flags. This runs before Open so a
+	// rejected command leaves no file and no line behind: the log should never
+	// record that someone tried to build an event that cannot exist.
+	passed := flagsPassed(fs)
+	var wrong []string
+	switch *kind {
+	case kindObservation:
+		wrong = forbidden(passed, verdictOnlyFlags)
+	case kindVerdict:
+		wrong = forbidden(passed, observationOnlyFlags)
+	default:
+		fmt.Fprintf(os.Stderr, "agentlog: unknown --kind %q: want %s or %s\n",
+			*kind, kindObservation, kindVerdict)
+		os.Exit(1)
+	}
+	if len(wrong) > 0 {
+		fmt.Fprintf(os.Stderr, "agentlog: --kind %s cannot carry %s\n",
+			*kind, strings.Join(wrong, ", "))
+		os.Exit(1)
+	}
+
 	runID := *run
 	if runID == "" {
 		runID = os.Getenv("AGENTLOG_RUN")
@@ -183,13 +246,19 @@ func runEmit(args []string) {
 	}
 	defer closeFn()
 
-	e := agentlog.Event{
-		Kind: *kind, Stage: *stage, Actor: *actor, Summary: *summary,
-		Status: *status, DurMS: *dur, Gate: *gate, Verdict: *verdict,
-		Witness: *witness, Adjudicator: *adj, Enforce: *enforce,
-		Attrs: attrs,
+	switch *kind {
+	case kindObservation:
+		err = log.EmitObservation(agentlog.Observation{
+			Stage: *stage, Actor: *actor, Summary: *summary,
+			DurMS: *dur, Status: *status, Attrs: attrs,
+		})
+	case kindVerdict:
+		err = log.EmitVerdict(agentlog.Verdict{
+			Gate: *gate, Verdict: *verdict, Witness: *witness, Actor: *actor,
+			Adjudicator: *adj, Enforce: *enforce, Summary: *summary, Attrs: attrs,
+		})
 	}
-	if err := log.Emit(e); err != nil {
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "agentlog:", err)
 		os.Exit(1)
 	}
