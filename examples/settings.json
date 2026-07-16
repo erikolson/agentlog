@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "AGENTLOG_DIR=$HOME/.agentlog agentlog hook"
+            "command": "AGENTLOG_DIR=$HOME/.agentlog agentlog hook --attr project=$CLAUDE_PROJECT_DIR"
           }
         ]
       }

@@ -54,6 +54,12 @@ type Event struct {
 	Witness     string `json:"witness,omitempty"`     // content hash of the adjudicated artifact
 	Adjudicator string `json:"adjudicator,omitempty"` // the ratifier; must differ from Actor
 	Enforce     string `json:"enforce,omitempty"`     // block|warn|record
+
+	// Attrs carries domain annotations, string→string. It is the contract's
+	// only extension point: a domain annotates here and never adds a top-level
+	// field, which is what lets the core stay frozen. Empty stays off the wire,
+	// so an unannotated event serializes exactly as it did before Attrs existed.
+	Attrs map[string]string `json:"attrs,omitempty"`
 }
 
 // Logger appends events to an io.Writer as JSONL. Safe for concurrent use.

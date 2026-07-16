@@ -85,6 +85,12 @@ applying — drift-as-build-failure with no extra machinery. `adjudicator` is th
 ratifier, and keeping it distinct from `actor` lets `proposer ≠ ratifier` be a
 schema invariant a reader can check over the stream.
 
+`attrs` is the one extension point: an object of string→string where a domain
+hangs its own data. Everything else is sealed — `additionalProperties: false`
+makes a new top-level field a breaking change, while a new `attrs` key breaks
+nobody. That asymmetry is the point: annotations get a bounded place to live so
+the core never has to grow to accommodate them.
+
 The design discipline is **summary, not payload**: store enough to reproduce and
 verify, never the full request/response. That keeps the log greppable and cheap
 (a heavy day gzips to tens of KB), and it keeps field extraction *mechanical* —
@@ -116,6 +122,23 @@ Drop a manual milestone marker mid-session for the *why* a hook can't infer:
 agentlog emit --stage delivery --summary "starting auth refactor"
 ```
 
+Annotate any event with `--attr key=value`, repeatable. It is the only way to
+add your own data, and it lands under `attrs`:
+
+```sh
+agentlog emit --stage delivery --summary "starting auth refactor" \
+  --attr repo=auth --attr ticket=PROJ-1234
+```
+
+`--attr` works on `hook` too — that's how the wiring above stamps every event
+with the project directory. A value splits on the first `=` only, so it may
+itself contain `=`; on a repeated key the last wins. A key that names a
+top-level field (`status`, `run_id`, …) is ignored rather than allowed to shadow
+the core: `attrs` is a separate namespace by design. A malformed `--attr` is
+fatal for `emit`, which fails before writing anything, and skipped by `hook`,
+which still records the event and still exits 0 — the recorder never breaks a
+session.
+
 ## Use it — as a dependency (enforcement layer)
 
 Import the package and write verdicts through the same appender:
@@ -132,6 +155,7 @@ log.Emit(agentlog.Event{
     Adjudicator: "ratchet-check",
     Enforce:     "block",
     Summary:     "3 failing in ./auth",
+    Attrs:       map[string]string{"pkg": "./auth"},
 })
 ```
 
