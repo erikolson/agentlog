@@ -171,12 +171,6 @@ directory it resolved and whether it is writable, and how many events and runs
 landed today. It only reads, and it only reports — no hook installed is a
 finding, not an error, so it exits 0 either way. Interpretation is yours.
 
-Read a run back:
-
-```sh
-grep '"run_id":"sess-9"' ~/.agentlog/2026-07-15.jsonl | jq .
-```
-
 Drop a manual milestone marker mid-session for the *why* a hook can't infer:
 
 ```sh
@@ -199,6 +193,57 @@ the core: `attrs` is a separate namespace by design. A malformed `--attr` is
 fatal for `emit`, which fails before writing anything, and skipped by `hook`,
 which still records the event and still exits 0 — the recorder never breaks a
 session.
+
+## Read it back
+
+There is no query language and there will not be one. The file is JSONL and the
+field names are the contract, so the tools already on your machine *are* the
+query layer:
+
+```sh
+# one full run, oldest-first
+grep '"run_id":"sess-9"' ~/.agentlog/2026-07-15.jsonl | jq .
+
+# just the failures across today
+jq 'select(.status=="error" or .verdict=="fail")' ~/.agentlog/2026-07-15.jsonl
+
+# every verdict and its gate
+jq -r 'select(.kind=="verdict") | "\(.gate)\t\(.verdict)\t\(.witness)"' ~/.agentlog/*.jsonl
+
+# what run_ids happened today, with event counts
+jq -r .run_id ~/.agentlog/2026-07-15.jsonl | sort | uniq -c
+
+# annotations query like anything else
+jq -r 'select(.attrs.repo=="auth") | .summary' ~/.agentlog/*.jsonl
+```
+
+Two things worth knowing before you trust what comes back.
+
+**That closing quote is load-bearing.** `'"run_id":"sess-9"'` matches only
+`sess-9`; drop the quote and it also matches `sess-90`. `grep` before `jq` is a
+prefilter — on a large file it skips the JSON parse for most lines — but it is
+matching *text*, not fields. When exactness matters more than speed, let jq do
+the matching instead:
+
+```sh
+jq -r 'select(.run_id=="sess-9") | .summary' ~/.agentlog/*.jsonl
+```
+
+**Order by `ts`, not `seq`.** `seq` counts within one process, and the hook is
+one process per tool call — so a whole day of hook events can all read `seq: 1`.
+Sorting by the field named "sequence" is the trap the name sets. File order is
+append order, which is chronological in practice; when you want the guarantee, or
+when a run crosses midnight UTC into a second file, sort explicitly:
+
+```sh
+jq -s -r 'map(select(.run_id=="sess-9")) | sort_by(.ts) | .[] | "\(.ts)  \(.summary)"' \
+  ~/.agentlog/*.jsonl
+```
+
+Everything above is `grep`, `jq`, `sort` and `uniq` against a documented shape.
+That is the whole point of [the contract](spec/SPEC.md) being a file format
+rather than an API: nothing here needs agentlog to be running, installed, or even
+the thing that wrote the log.
 
 ## Use it — as a dependency (enforcement layer)
 
