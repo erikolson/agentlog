@@ -110,11 +110,66 @@ Build the binary and put it on your PATH:
 go install github.com/erikolson/agentlog/cmd/agentlog@latest
 ```
 
-Wire it into Claude Code so it fires on every tool call. Add the block in
-[`examples/settings.json`](examples/settings.json) to `~/.claude/settings.json`
-for a global recorder (or a project's `.claude/settings.json` to scope it to one
-repo). It reads the PostToolUse payload on stdin, appends an observation, writes
-nothing to stdout, and always exits 0 — it can never break a session.
+Wire it into Claude Code so it fires on every tool call. Add this to
+`~/.claude/settings.json` for a global recorder, or to a project's
+`.claude/settings.json` to scope it to one repo:
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "AGENTLOG_DIR=$HOME/.agentlog agentlog hook --attr project=$CLAUDE_PROJECT_DIR"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+That is the whole contract, and it is the same one anything else speaks — another
+harness, a CI step, a config manager. `AGENTLOG_DIR` picks the log directory
+(default `.agentlog`, beside the work); `--attr` stamps every event with an
+annotation. The hook reads the PostToolUse payload on stdin, appends an
+observation, writes nothing to stdout, and always exits 0 — it can never break a
+session. The same block lives in
+[`examples/settings.json`](examples/settings.json).
+
+Or, one command:
+
+```sh
+agentlog install-hook --global     # ~/.claude/settings.json
+agentlog install-hook --project    # ./.claude/settings.json
+```
+
+It writes exactly the stanza above. What it buys you is care, not brevity: it
+**merges** into your existing settings rather than overwriting them, **adds
+nothing** if an agentlog hook is already there, writes a **`settings.json.bak`**
+with your original bytes before changing anything, and **refuses** to touch a
+settings file it cannot parse. `--dry-run` prints the result and writes nothing.
+It picks no target by default — a command that edits your config does not guess
+which file. The contract it holds itself to is
+[ADR 0002](docs/adr/0002-install-hook-edits-user-config.md).
+
+One caveat worth knowing: a merge round-trips through a JSON encoder, so your
+file comes back re-indented and its keys reordered. The data is preserved
+exactly; the formatting is not. The `.bak` keeps your original.
+
+Then ask whether it is actually recording:
+
+```sh
+agentlog doctor
+```
+
+It reports the version, whether a hook is wired and in which file, the log
+directory it resolved and whether it is writable, and how many events and runs
+landed today. It only reads, and it only reports — no hook installed is a
+finding, not an error, so it exits 0 either way. Interpretation is yours.
 
 Read a run back:
 

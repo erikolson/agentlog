@@ -1,13 +1,20 @@
 // Command agentlog appends structured events to a daily JSONL black box.
 //
-//	agentlog hook [flags]    read a PostToolUse payload on stdin, append it, exit 0
-//	agentlog emit [flags]    append one explicit event
+//	agentlog hook [flags]          read a PostToolUse payload on stdin, append it, exit 0
+//	agentlog emit [flags]          append one explicit event
+//	agentlog install-hook [flags]  wire the hook into a Claude Code settings.json
+//	agentlog doctor [flags]        report whether the black box is recording
 //	agentlog version
 //
-// The two entry points share one appender. `hook` is the standalone, pure
-// substrate path: a session hook shells out to it on every tool call. `emit`
-// is the explicit path used for manual notes and by anything that prefers to
-// shell out rather than import the package.
+// The two appending entry points share one appender. `hook` is the standalone,
+// pure substrate path: a session hook shells out to it on every tool call.
+// `emit` is the explicit path used for manual notes and by anything that
+// prefers to shell out rather than import the package.
+//
+// `install-hook` and `doctor` touch no events. They exist so that wiring the
+// recorder up, and checking that it is running, do not require hand-editing
+// JSON or trusting that it worked. See
+// docs/adr/0002-install-hook-edits-user-config.md.
 package main
 
 import (
@@ -20,7 +27,11 @@ import (
 	"github.com/erikolson/agentlog"
 )
 
-var version = "0.2.0"
+var version = "0.3.0"
+
+// defaultLogDir is where events land when AGENTLOG_DIR says nothing: beside the
+// work, in the current directory.
+const defaultLogDir = ".agentlog"
 
 // The kinds emit routes on. These are CLI vocabulary — the flag value a user
 // types — which happens to match the wire's; the library keeps its own copy
@@ -122,6 +133,10 @@ func main() {
 		runHook(os.Args[2:])
 	case "emit":
 		runEmit(os.Args[2:])
+	case "install-hook":
+		runInstallHook(os.Args[2:])
+	case "doctor":
+		runDoctor(os.Args[2:])
 	case "version", "-v", "--version":
 		fmt.Println("agentlog", version)
 	default:
@@ -134,7 +149,7 @@ func dir() string {
 	if d := os.Getenv("AGENTLOG_DIR"); d != "" {
 		return d
 	}
-	return ".agentlog"
+	return defaultLogDir
 }
 
 // runHook never blocks the session: any error is swallowed to stderr and we
@@ -268,12 +283,25 @@ func usage() {
 	fmt.Fprint(os.Stderr, `agentlog - a black box for agent sessions
 
 usage:
-  agentlog hook [flags]    read a PostToolUse payload on stdin, append it, exit 0
-  agentlog emit [flags]    append one explicit event
+  agentlog hook [flags]          read a PostToolUse payload on stdin, append it, exit 0
+  agentlog emit [flags]          append one explicit event
+  agentlog install-hook [flags]  wire the hook into a Claude Code settings.json
+  agentlog doctor [flags]        report whether the black box is recording
   agentlog version
 
 flags (both hook and emit):
   --attr key=value   domain annotation, recorded under attrs; repeatable
+
+install-hook — pick exactly one target; it never guesses which file to edit:
+  --global           ~/.claude/settings.json, logging to $HOME/.agentlog
+  --project          ./.claude/settings.json, logging to ./.agentlog
+  --settings PATH    an explicit settings.json
+  --dry-run          print the result, write nothing
+It merges into an existing file, adds nothing if an agentlog hook is already
+there, backs up to settings.json.bak before changing anything, and refuses to
+touch a settings.json it cannot parse.
+
+doctor — same target flags; defaults to --project. Reads, never writes.
 
 env:
   AGENTLOG_DIR   log directory (default: .agentlog)
