@@ -1,0 +1,1 @@
+{"run_id":"sess-9","seq":8,"ts":"2026-07-15T18:04:23.902Z","kind":"verdict","gate":"tests","verdict":"fail","witness":"sha256:9f2c1a","adjudicator":"ratchet-check","actor":"agent","enforce":"block","summary":"3 failing in ./auth"}

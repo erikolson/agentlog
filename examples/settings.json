@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "AGENTLOG_DIR=$HOME/.agentlog agentlog hook"
+          }
+        ]
+      }
+    ]
+  }
+}

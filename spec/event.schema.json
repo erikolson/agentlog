@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/erikolson/agentlog/spec/event.schema.json",
+  "title": "agentlog event",
+  "description": "One line of an agentlog JSONL stream. Contract version 1.",
+  "type": "object",
+  "required": ["run_id", "seq", "ts", "kind"],
+  "properties": {
+    "run_id": { "type": "string", "minLength": 1 },
+    "seq": { "type": "integer", "minimum": 0 },
+    "ts": { "type": "string", "format": "date-time" },
+    "kind": { "enum": ["observation", "verdict"] },
+
+    "stage": { "enum": ["collection", "llm_call", "tool_call", "safety", "delivery"] },
+    "actor": { "type": "string" },
+    "summary": { "type": "string" },
+    "dur_ms": { "type": "integer", "minimum": 0 },
+    "status": { "enum": ["success", "error", "timeout", "fallback", "ok"] },
+
+    "gate": { "type": "string" },
+    "verdict": { "enum": ["pass", "fail", "waived", "error"] },
+    "witness": { "type": "string", "minLength": 1 },
+    "adjudicator": { "type": "string" },
+    "enforce": { "enum": ["block", "warn", "record"] },
+
+    "attrs": {
+      "description": "Domain annotations. The only extension point. Domains add here; they never redefine core.",
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "kind": { "const": "verdict" } } },
+      "then": { "required": ["gate", "verdict", "witness", "adjudicator", "enforce"] }
+    }
+  ],
+  "additionalProperties": false
+}

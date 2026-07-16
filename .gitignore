@@ -1,0 +1,8 @@
+# Runtime data, not source: the log writes here by default.
+.agentlog/
+*.jsonl
+
+# Build output.
+/agentlog
+
+.DS_Store

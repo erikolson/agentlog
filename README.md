@@ -1,0 +1,164 @@
+# agentlog
+
+A black box for agent sessions. One JSONL file per day, one structured line per
+event, so you can reconstruct what an agent actually did when something breaks.
+
+It does exactly one thing — own the event schema and the append path — and
+refuses to do anything else. That refusal is the point.
+
+## Why
+
+A flight recorder that only records when the pilot remembers to flip it isn't a
+flight recorder. Determinism is what lets you *not* log: if you can hold the
+whole computation in your head and re-run it, the black box is redundant. Agents
+delete that affordance. You delegated the work to a non-deterministic actor and
+weren't watching each step, so the event stream is the only thing standing
+between you and archaeology. `agentlog` is that stream, in its simplest binding
+form.
+
+## What it is (and isn't)
+
+`agentlog` sits at **enforced observation**. When wired as a session hook, the
+harness runs it on every tool call whether the agent cooperates or not — it's
+procedural code, not a suggestion to a model. But observation is record-only:
+the strongest a logger can ever be is "the event is guaranteed recorded when it
+fires." The power to *block* is a property of verdicts, not observations, and it
+lives one layer up. So this is already at the top of its own column, not falling
+short of some other one.
+
+Two levels of the same stream:
+
+| level          | who writes it     | binding? |
+| -------------- | ----------------- | -------- |
+| observation    | a session hook    | recorded-when-fired |
+| verdict        | an enforcement layer (e.g. ratchet) | the action it describes was already enforced |
+
+Both are the same `Event` type. A consumer that only ever writes observations
+still speaks the full schema, so the enforcement layer never has to fork it.
+
+## The one rule: dependency direction
+
+```
+                 imports
+  ratchet  ───────────────▶  agentlog        (binding layer depends on substrate)
+  hook     ───── shells ───▶  agentlog        (basic use depends on substrate)
+
+  agentlog ──▶  (nothing)                     (substrate depends on nobody)
+```
+
+The arrow never inverts. `agentlog` knows nothing about gates, enforcement, or
+any specific tool. Keep it that way and it stays portable into any repo; invert
+it and you've welded your general black box to one enforcement tool and lost the
+basic-use story.
+
+## Layout
+
+agentlog is a service domain; its layers map to directories where Go's layout
+allows and to a clear mapping where it doesn't.
+
+| layer | what | where |
+| ----- | ---- | ----- |
+| 1 — contract | the event spec, system of record | [`spec/`](spec/) — `SPEC.md`, `event.schema.json`, golden examples |
+| 2 — standards | invariants as conformance tests | [`standards/`](standards/) |
+| 3 — platform | the paved road that emits conforming events | root package + [`cmd/`](cmd/) |
+| 4 — implementations | adapters that speak the contract | the session hook, ratchet, `examples/settings.json` |
+
+The contract is canonical; the code derives from it. The JSON Schema is
+language-agnostic — validate any producer's output in CI with any tool (e.g.
+`check-jsonschema spec/examples/*.json`), and run `go test ./standards/...` for
+the relational invariants the schema can't express. Drift between an emitted
+event and the contract is a failing check, not a code review comment.
+
+## The schema
+
+One line per event. Observation and verdict fields share a struct; empty fields
+are omitted.
+
+```json
+{"run_id":"sess-9","seq":7,"ts":"2026-07-15T18:04:22.114Z","kind":"observation","stage":"tool_call","actor":"agent","summary":"Bash: go test ./...","status":"error"}
+{"run_id":"sess-9","seq":8,"ts":"2026-07-15T18:04:23.902Z","kind":"verdict","gate":"tests","verdict":"fail","witness":"sha256:9f2c…","adjudicator":"ratchet-check","enforce":"block","summary":"3 failing in ./auth"}
+```
+
+`witness` binds a verdict to a content hash, not a filename: a pass authorizes
+*that* artifact and no other, so if the file changes the pass silently stops
+applying — drift-as-build-failure with no extra machinery. `adjudicator` is the
+ratifier, and keeping it distinct from `actor` lets `proposer ≠ ratifier` be a
+schema invariant a reader can check over the stream.
+
+The design discipline is **summary, not payload**: store enough to reproduce and
+verify, never the full request/response. That keeps the log greppable and cheap
+(a heavy day gzips to tens of KB), and it keeps field extraction *mechanical* —
+structured in, known fields out, no model in the loop.
+
+## Use it — basic (standalone black box)
+
+Build the binary and put it on your PATH:
+
+```sh
+go install github.com/erikolson/agentlog/cmd/agentlog@latest
+```
+
+Wire it into Claude Code so it fires on every tool call. Add the block in
+[`examples/settings.json`](examples/settings.json) to `~/.claude/settings.json`
+for a global recorder (or a project's `.claude/settings.json` to scope it to one
+repo). It reads the PostToolUse payload on stdin, appends an observation, writes
+nothing to stdout, and always exits 0 — it can never break a session.
+
+Read a run back:
+
+```sh
+grep '"run_id":"sess-9"' ~/.agentlog/2026-07-15.jsonl | jq .
+```
+
+Drop a manual milestone marker mid-session for the *why* a hook can't infer:
+
+```sh
+agentlog emit --stage delivery --summary "starting auth refactor"
+```
+
+## Use it — as a dependency (enforcement layer)
+
+Import the package and write verdicts through the same appender:
+
+```go
+log, closeFn, _ := agentlog.Open(".agentlog", runID)
+defer closeFn()
+
+log.Emit(agentlog.Event{
+    Kind:        agentlog.KindVerdict,
+    Gate:        "tests",
+    Verdict:     "fail",
+    Witness:     "sha256:" + hash,
+    Adjudicator: "ratchet-check",
+    Enforce:     "block",
+    Summary:     "3 failing in ./auth",
+})
+```
+
+Observations and verdicts land in the same daily file, keyed by `run_id`, so the
+enforcement layer's Feedback face reads exactly the stream its Verify face wrote.
+
+## What this refuses to become
+
+Knowing what to leave out is the whole design. `agentlog` will not grow: log
+levels, a query language, rotation daemons, remote sinks, dashboards, config
+files, or any interpretation of unstructured output. Rotation is the date in the
+filename. Compression is a cron job. Querying is `grep` and `jq`. Interpretation
+is someone else's face. Every one of those omissions is deliberate — the moment
+this package grows an opinion, it stops being safe substrate for the things
+built on top of it.
+
+## Limitations (honest)
+
+- `seq` increments within a single process. With one hook invocation per tool
+  call (separate processes), ordering within a run is carried by `ts`, not
+  `seq`.
+- The hook only sees events the harness mediates. "Every tool call is logged" is
+  guaranteed; "everything the agent thought" is not — reasoning without a tool
+  call produces no tool-call event to hook.
+- Payload projection is best-effort across harnesses. Field names track the
+  Claude Code convention and degrade gracefully elsewhere.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
