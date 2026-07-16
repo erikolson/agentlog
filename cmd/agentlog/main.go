@@ -4,6 +4,7 @@
 //	agentlog emit [flags]          append one explicit event
 //	agentlog install-hook [flags]  wire the hook into a Claude Code settings.json
 //	agentlog doctor [flags]        report whether the black box is recording
+//	agentlog show --run ID         print one run, oldest first, as raw JSONL
 //	agentlog version
 //
 // The two appending entry points share one appender. `hook` is the standalone,
@@ -27,7 +28,7 @@ import (
 	"github.com/erikolson/agentlog"
 )
 
-var version = "0.3.0"
+var version = "0.4.0"
 
 // defaultLogDir is where events land when AGENTLOG_DIR says nothing: beside the
 // work, in the current directory.
@@ -137,6 +138,8 @@ func main() {
 		runInstallHook(os.Args[2:])
 	case "doctor":
 		runDoctor(os.Args[2:])
+	case "show":
+		runShow(os.Args[2:])
 	case "version", "-v", "--version":
 		fmt.Println("agentlog", version)
 	default:
@@ -287,10 +290,16 @@ usage:
   agentlog emit [flags]          append one explicit event
   agentlog install-hook [flags]  wire the hook into a Claude Code settings.json
   agentlog doctor [flags]        report whether the black box is recording
+  agentlog show --run ID         print one run, oldest first, as raw JSONL
   agentlog version
 
 flags (both hook and emit):
   --attr key=value   domain annotation, recorded under attrs; repeatable
+
+show — selects, never presents. Every file, exact --run, ts order; the lines
+come out exactly as written, so jq does the rest:
+  agentlog show --run sess-9 | jq 'select(.kind=="verdict")'
+There is no --since, --kind or --format on purpose. Those are jq's.
 
 install-hook — pick exactly one target; it never guesses which file to edit:
   --global           ~/.claude/settings.json, logging to $HOME/.agentlog

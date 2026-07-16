@@ -196,9 +196,21 @@ session.
 
 ## Read it back
 
-There is no query language and there will not be one. The file is JSONL and the
-field names are the contract, so the tools already on your machine *are* the
-query layer:
+One command selects a run correctly, and then gets out of the way:
+
+```sh
+agentlog show --run sess-9                                  # oldest first, raw JSONL
+agentlog show --run sess-9 | jq 'select(.kind=="verdict")'  # jq does the rest
+```
+
+It reads every file (a run can cross midnight UTC into two), matches `run_id`
+exactly, sorts by `ts`, and prints the lines byte for byte as written. That is
+all it does — no `--since`, no `--kind`, no `--format`, because those are jq's
+and jq is better at them. It *selects*; jq *presents*
+([ADR 0003](docs/adr/0003-show-selects-jq-presents.md)).
+
+Everything else is `grep` and `jq` against a documented shape. There is no query
+language and there will not be one:
 
 ```sh
 # one full run, oldest-first
@@ -240,10 +252,12 @@ jq -s -r 'map(select(.run_id=="sess-9")) | sort_by(.ts) | .[] | "\(.ts)  \(.summ
   ~/.agentlog/*.jsonl
 ```
 
-Everything above is `grep`, `jq`, `sort` and `uniq` against a documented shape.
-That is the whole point of [the contract](spec/SPEC.md) being a file format
-rather than an API: nothing here needs agentlog to be running, installed, or even
-the thing that wrote the log.
+Every recipe here is `grep`, `jq`, `sort` and `uniq` against a documented shape,
+and none of them needs agentlog running, installed, or even to have been the
+thing that wrote the log. That is the whole point of
+[the contract](spec/SPEC.md) being a file format rather than an API: the log
+outlives the tool. `show` is a convenience over that format and never a gate in
+front of it — anything it does, the recipes above do too.
 
 ## Use it — as a dependency (enforcement layer)
 
@@ -277,10 +291,17 @@ enforcement layer's Feedback face reads exactly the stream its Verify face wrote
 Knowing what to leave out is the whole design. `agentlog` will not grow: log
 levels, a query language, rotation daemons, remote sinks, dashboards, config
 files, or any interpretation of unstructured output. Rotation is the date in the
-filename. Compression is a cron job. Querying is `grep` and `jq`. Interpretation
-is someone else's face. Every one of those omissions is deliberate — the moment
-this package grows an opinion, it stops being safe substrate for the things
-built on top of it.
+filename. Compression is a cron job. Interpretation is someone else's face.
+Every one of those omissions is deliberate — the moment this package grows an
+opinion, it stops being safe substrate for the things built on top of it.
+
+Querying is `grep` and `jq`, with one deliberate exception. `show --run`
+*selects* — every file, exact id, `ts` order — and prints the raw lines for jq
+to present. Selection has to know the schema, and getting it wrong returns the
+wrong data silently; presentation doesn't, and jq is better at it. That is the
+whole line, and there is no `--since`, `--kind` or `--format` on the other side
+of it. [ADR 0003](docs/adr/0003-show-selects-jq-presents.md) records why it
+moved and what would mean it moved too far.
 
 ## Limitations (honest)
 
