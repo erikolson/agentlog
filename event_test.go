@@ -198,10 +198,11 @@ func TestEmitVerdictReproducesGoldenExample(t *testing.T) {
 	}
 }
 
-// The v0.2.0 API split is a Go-side change only. These two cases pin the exact
-// key set and order v0.1.1 emitted, so a future edit to the wire struct that
-// renames, reorders or un-omitempties a field fails here rather than silently
-// breaking every consumer of the published contract.
+// These cases pin the exact key set and order the wire emits, so a future edit
+// to the wire struct that renames, reorders or un-omitempties a field fails
+// here rather than silently breaking every consumer of the published contract.
+// The agent-identity fields (contract v2) are omitempty, so any event that
+// names no subagent stays byte-identical to the v1 lines pinned below.
 func TestWireFormatIsUnchanged(t *testing.T) {
 	t.Run("observation", func(t *testing.T) {
 		var buf bytes.Buffer
@@ -254,6 +255,24 @@ func TestWireFormatIsUnchanged(t *testing.T) {
 		// actor rides in the wire struct's observation slot, which is where
 		// v0.1.1's flat Event put it for a verdict too.
 		want := []string{"run_id", "seq", "ts", "kind", "actor", "summary", "gate", "verdict", "witness", "adjudicator", "enforce"}
+		if got := orderedKeys(t, line); !equal(got, want) {
+			t.Errorf("wire keys drifted\n got: %v\nwant: %v", got, want)
+		}
+	})
+
+	t.Run("observation with agent identity", func(t *testing.T) {
+		var buf bytes.Buffer
+		l := New(&buf, "sess-9")
+		err := l.EmitObservation(Observation{
+			Stage: "tool_call", Actor: "subagent", AgentID: "ad7001", AgentType: "Explore",
+			Summary: "Bash: rg -n secret", Status: "ok",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		line := strings.TrimSpace(buf.String())
+		// agent_id and agent_type sit immediately after actor, before summary.
+		want := []string{"run_id", "seq", "ts", "kind", "stage", "actor", "agent_id", "agent_type", "summary", "status"}
 		if got := orderedKeys(t, line); !equal(got, want) {
 			t.Errorf("wire keys drifted\n got: %v\nwant: %v", got, want)
 		}
@@ -328,6 +347,67 @@ func TestProjectHookPayload(t *testing.T) {
 	}
 	if o.Status != "error" {
 		t.Errorf("want error status, got %q", o.Status)
+	}
+	// A main-loop payload names no subagent, so identity stays empty and the
+	// actor is the top-level kind.
+	if o.AgentID != "" || o.AgentType != "" {
+		t.Errorf("main-loop call should carry no agent identity, got id=%q type=%q", o.AgentID, o.AgentType)
+	}
+}
+
+// A tool call inside a subagent carries agent_id/agent_type, which the
+// projection reflects in the observation and turns into a subagent actor.
+func TestProjectHookPayloadSubagent(t *testing.T) {
+	raw := []byte(`{
+		"session_id": "sess-9",
+		"tool_name": "Bash",
+		"tool_input": {"command": "rg -n secret"},
+		"tool_response": {"is_error": false},
+		"agent_id": "ad7001",
+		"agent_type": "Explore"
+	}`)
+	o := ProjectHookPayload(raw).Observation
+	if o.Actor != "subagent" {
+		t.Errorf("want subagent actor, got %q", o.Actor)
+	}
+	if o.AgentID != "ad7001" {
+		t.Errorf("want agent id ad7001, got %q", o.AgentID)
+	}
+	if o.AgentType != "Explore" {
+		t.Errorf("want agent type Explore, got %q", o.AgentType)
+	}
+}
+
+// A spawn tool call records the parent→child edge and per-subagent telemetry in
+// attrs, so a reader can rebuild the tree without the recorder holding state.
+func TestProjectHookPayloadSpawnEdge(t *testing.T) {
+	raw := []byte(`{
+		"session_id": "sess-9",
+		"tool_name": "Agent",
+		"tool_input": {"description": "explore auth"},
+		"tool_response": {"agentId": "ad7001", "totalTokens": 55823, "totalToolUseCount": 10}
+	}`)
+	o := ProjectHookPayload(raw).Observation
+	if o.Actor != "agent" {
+		t.Errorf("spawn happens in the parent loop; want agent actor, got %q", o.Actor)
+	}
+	if o.Attrs["spawned_agent_id"] != "ad7001" {
+		t.Errorf("want spawn edge to child ad7001, got %q", o.Attrs["spawned_agent_id"])
+	}
+	if o.Attrs["spawned_tokens"] != "55823" {
+		t.Errorf("want per-subagent token telemetry, got %q", o.Attrs["spawned_tokens"])
+	}
+	if o.Attrs["spawned_tool_uses"] != "10" {
+		t.Errorf("want per-subagent tool-use telemetry, got %q", o.Attrs["spawned_tool_uses"])
+	}
+}
+
+// An ordinary (non-spawn) tool call must not manufacture an empty attrs map:
+// the projection returns nil so nothing reaches the wire.
+func TestProjectHookPayloadNoSpawnNoAttrs(t *testing.T) {
+	raw := []byte(`{"tool_name":"Bash","tool_input":{"command":"ls"},"tool_response":{}}`)
+	if a := ProjectHookPayload(raw).Observation.Attrs; a != nil {
+		t.Errorf("non-spawn call should carry no attrs, got %v", a)
 	}
 }
 

@@ -1,0 +1,1 @@
+{"run_id":"sess-9","seq":13,"ts":"2026-07-15T18:04:25.001Z","kind":"observation","stage":"tool_call","actor":"subagent","agent_id":"ad7001","agent_type":"Explore","summary":"Bash: rg -n secret","status":"ok"}

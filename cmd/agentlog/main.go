@@ -28,7 +28,7 @@ import (
 	"github.com/erikolson/agentlog"
 )
 
-var version = "0.4.0"
+var version = "0.5.0"
 
 // defaultLogDir is where events land when AGENTLOG_DIR says nothing: beside the
 // work, in the current directory.
@@ -84,7 +84,8 @@ func (a *attrFlag) Set(v string) error { *a = append(*a, v); return nil }
 // projected field; a collision is dropped rather than recorded.
 var reservedAttrKey = map[string]bool{
 	"run_id": true, "seq": true, "ts": true, "kind": true,
-	"stage": true, "actor": true, "summary": true, "dur_ms": true, "status": true,
+	"stage": true, "actor": true, "agent_id": true, "agent_type": true,
+	"summary": true, "dur_ms": true, "status": true,
 	"gate": true, "verdict": true, "witness": true, "adjudicator": true, "enforce": true,
 	"attrs": true,
 }
@@ -177,7 +178,15 @@ func runHook(args []string) {
 	raw, _ := io.ReadAll(os.Stdin)
 	p := agentlog.ProjectHookPayload(raw) // projection first...
 	o := p.Observation
-	o.Attrs = attrs // ...then annotations, over no projected field
+	// ...then --attr annotations merged on top. The projection may have set
+	// attrs itself (a spawn edge, per-subagent telemetry), so merge rather than
+	// replace; a user --attr wins on the rare key collision.
+	for k, v := range attrs {
+		if o.Attrs == nil {
+			o.Attrs = make(map[string]string)
+		}
+		o.Attrs[k] = v
+	}
 	run := p.RunID
 	if run == "" {
 		run = agentlog.NewRunID()
@@ -203,7 +212,9 @@ func runEmit(args []string) {
 	fs := flag.NewFlagSet("emit", flag.ExitOnError)
 	kind := fs.String("kind", kindObservation, "observation|verdict")
 	stage := fs.String("stage", "", "collection|llm_call|tool_call|safety|delivery")
-	actor := fs.String("actor", "", "proposer that produced the event")
+	actor := fs.String("actor", "", "proposer that produced the event (agent|subagent)")
+	agentID := fs.String("agent-id", "", "instance id of the acting agent; empty for the top-level loop")
+	agentType := fs.String("agent-type", "", "type of the acting agent, e.g. Explore")
 	summary := fs.String("summary", "", "short summary; enough to reproduce/verify, not the payload")
 	status := fs.String("status", "", "success|error|timeout|fallback|ok")
 	dur := fs.Int64("dur-ms", 0, "duration in milliseconds")
@@ -267,12 +278,13 @@ func runEmit(args []string) {
 	switch *kind {
 	case kindObservation:
 		err = log.EmitObservation(agentlog.Observation{
-			Stage: *stage, Actor: *actor, Summary: *summary,
-			DurMS: *dur, Status: *status, Attrs: attrs,
+			Stage: *stage, Actor: *actor, AgentID: *agentID, AgentType: *agentType,
+			Summary: *summary, DurMS: *dur, Status: *status, Attrs: attrs,
 		})
 	case kindVerdict:
 		err = log.EmitVerdict(agentlog.Verdict{
 			Gate: *gate, Verdict: *verdict, Witness: *witness, Actor: *actor,
+			AgentID: *agentID, AgentType: *agentType,
 			Adjudicator: *adj, Enforce: *enforce, Summary: *summary, Attrs: attrs,
 		})
 	}

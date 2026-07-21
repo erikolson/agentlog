@@ -37,7 +37,10 @@ func has(m map[string]any, k string) bool {
 
 // I1: every event carries the core fields.
 func TestCoreFieldsPresent(t *testing.T) {
-	for _, name := range []string{"observation.json", "verdict.json"} {
+	for _, name := range []string{
+		"observation.json", "verdict.json",
+		"observation_subagent.json", "observation_spawn.json",
+	} {
 		e := load(t, name)
 		for _, k := range []string{"run_id", "seq", "ts", "kind"} {
 			if !has(e, k) {
@@ -77,5 +80,38 @@ func TestAdjudicatorDiffersFromActor(t *testing.T) {
 	act, hasAct := e["actor"].(string)
 	if hasAdj && hasAct && adj == act {
 		t.Errorf("proposer == ratifier (%q); a verdict must be adjudicated by someone other than the proposer", adj)
+	}
+}
+
+// I4: agent_id present ⇒ actor is a subagent. agent_id names the instance,
+// actor names the kind; a set instance under a top-level kind is incoherent.
+// Relational, so it lives here rather than in the schema.
+func TestAgentIdImpliesSubagentActor(t *testing.T) {
+	e := load(t, "observation_subagent.json")
+	if !has(e, "agent_id") {
+		t.Fatal("fixture should carry an agent_id to exercise the invariant")
+	}
+	if e["actor"] != "subagent" {
+		t.Errorf("agent_id present but actor is %v, want subagent", e["actor"])
+	}
+	if !has(e, "agent_type") {
+		t.Error("a subagent event should also name its agent_type")
+	}
+}
+
+// The tree lives in edges, not per-event ancestry: a spawn event records the
+// parent→child link in attrs (never as an invented top-level field), which is
+// the only thing a reader needs to reconstruct the hierarchy at any depth.
+func TestSpawnEventCarriesEdgeInAttrs(t *testing.T) {
+	e := load(t, "observation_spawn.json")
+	attrs, ok := e["attrs"].(map[string]any)
+	if !ok {
+		t.Fatal("spawn fixture should carry attrs")
+	}
+	if id, _ := attrs["spawned_agent_id"].(string); id == "" {
+		t.Errorf("spawn edge missing: attrs.spawned_agent_id = %v", attrs["spawned_agent_id"])
+	}
+	if _, leaked := e["spawned_agent_id"]; leaked {
+		t.Error("spawned_agent_id leaked to the top level; the edge belongs in attrs")
 	}
 }

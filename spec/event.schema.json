@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/erikolson/agentlog/spec/event.schema.json",
   "title": "agentlog event",
-  "description": "One line of an agentlog JSONL stream. Contract version 1.",
+  "description": "One line of an agentlog JSONL stream. Contract version 2.",
   "type": "object",
   "required": ["run_id", "seq", "ts", "kind"],
   "properties": {
@@ -13,6 +13,8 @@
 
     "stage": { "enum": ["collection", "llm_call", "tool_call", "safety", "delivery"] },
     "actor": { "type": "string" },
+    "agent_id": { "type": "string" },
+    "agent_type": { "type": "string" },
     "summary": { "type": "string" },
     "dur_ms": { "type": "integer", "minimum": 0 },
     "status": { "enum": ["success", "error", "timeout", "fallback", "ok"] },

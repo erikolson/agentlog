@@ -1,0 +1,1 @@
+{"run_id":"sess-9","seq":12,"ts":"2026-07-15T18:04:24.500Z","kind":"observation","stage":"tool_call","actor":"agent","summary":"Agent: explore auth","status":"ok","attrs":{"spawned_agent_id":"ad7001","spawned_tokens":"55823","spawned_tool_uses":"10"}}

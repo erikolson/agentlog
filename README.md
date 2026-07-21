@@ -83,6 +83,8 @@ the split is a Go concern, the line is the contract.
 ```json
 {"run_id":"sess-9","seq":7,"ts":"2026-07-15T18:04:22.114Z","kind":"observation","stage":"tool_call","actor":"agent","summary":"Bash: go test ./...","status":"error"}
 {"run_id":"sess-9","seq":8,"ts":"2026-07-15T18:04:23.902Z","kind":"verdict","gate":"tests","verdict":"fail","witness":"sha256:9f2c…","adjudicator":"ratchet-check","enforce":"block","summary":"3 failing in ./auth"}
+{"run_id":"sess-9","seq":9,"ts":"2026-07-15T18:04:24.500Z","kind":"observation","stage":"tool_call","actor":"agent","summary":"Agent: explore auth","attrs":{"spawned_agent_id":"ad7001","spawned_tokens":"55823"}}
+{"run_id":"sess-9","seq":10,"ts":"2026-07-15T18:04:25.001Z","kind":"observation","stage":"tool_call","actor":"subagent","agent_id":"ad7001","agent_type":"Explore","summary":"Bash: rg -n secret","status":"ok"}
 ```
 
 `witness` binds a verdict to a content hash, not a filename: a pass authorizes
@@ -90,6 +92,20 @@ the split is a Go concern, the line is the contract.
 applying — drift-as-build-failure with no extra machinery. `adjudicator` is the
 ratifier, and keeping it distinct from `actor` lets `proposer ≠ ratifier` be a
 schema invariant a reader can check over the stream.
+
+`agent_id` and `agent_type` (contract v2) name *which* agent produced an event.
+They earn their place because agents fan out concurrently: a single run's stream
+interleaves the main loop and its subagents, ordered only by `ts` (`seq` is
+per-process), so without an identity key a parallel burst is an unattributable
+jumble. The contract records identity, **not hierarchy** — there is no
+`parent_id`, because the parent is not in a per-event payload and stamping it
+would force the recorder to hold state it refuses to hold. Instead the *spawn*
+event (`Agent: …` above) records the `parent → child` edge in `attrs` as
+`spawned_agent_id`, plus the child's cost telemetry. Every subagent has exactly
+one spawn, and each spawn is tagged with the spawner's `agent_id`, so a reader
+reconstructs the whole tree — at any depth — from the edge set. Building the tree
+(and a timeline of who ran when) is a consumer's job; the log just carries the
+facts. See [ADR 0004](docs/adr/0004-agent-identity-as-core-fields.md).
 
 `attrs` is the one extension point: an object of string→string where a domain
 hangs its own data. Everything else is sealed — `additionalProperties: false`

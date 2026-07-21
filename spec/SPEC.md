@@ -1,6 +1,6 @@
 # agentlog event contract
 
-**Contract version: 1**
+**Contract version: 2**
 
 This is the published contract for the agentlog service domain. It is the system
 of record. The Go types, the CLI, and every downstream service (ratchet, session
@@ -42,6 +42,32 @@ speaking agentlog, regardless of what generated the event.
 | `summary` | string  | enough to reproduce/verify — never the full payload |
 | `dur_ms`  | integer | duration in milliseconds |
 | `status`  | enum    | `success` \| `error` \| `timeout` \| `fallback` \| `ok` |
+
+## Actor identity (either kind)
+
+Both kinds may carry these; they qualify whoever produced the event.
+
+| field        | type   | notes |
+| ------------ | ------ | ----- |
+| `agent_id`   | string | instance id of the acting agent; empty (absent) means the top-level agent |
+| `agent_type` | string | type/name of the acting agent, e.g. `Explore`; empty for the top-level agent |
+
+`actor` names the *kind* of proposer — `agent` for the top-level loop,
+`subagent` for a nested one. `agent_id` and `agent_type` name the *instance* and
+its type. They exist because agents fan out concurrently, so a single run's
+stream interleaves several actors ordered only by `ts` (`seq` is per-process);
+`agent_id` is the key that demultiplexes them.
+
+The contract records **identity, not hierarchy**. It carries which agent
+produced each event, but never a `parent_id` — the parent is not present in a
+per-event payload, and stamping it would force the recorder to hold state it is
+built not to hold. Instead, a **spawn event** (the tool call that launches a
+subagent) records the `parent → child` edge as `attrs`, by convention
+`spawned_agent_id` (plus `spawned_tokens`, `spawned_dur_ms`,
+`spawned_tool_uses`). Every subagent has exactly one spawn, and each spawn event
+is tagged with the spawner's own `agent_id`, so a reader reconstructs the whole
+tree at any depth from the edge set. Tree structure is a consumer concern; see
+[ADR 0004](../docs/adr/0004-agent-identity-as-core-fields.md).
 
 ### verdict — a gate adjudicated an artifact (binding)
 
@@ -89,6 +115,19 @@ breaking and bumps the major version. `additionalProperties: false` means new
 core fields are deliberately breaking — new *data* goes in `attrs`, which never
 breaks anyone. Freeze is the default; a thaw (breaking change) is an explicit,
 logged decision.
+
+Pre-1.0, the freeze is looser: while nothing depends on this contract, a thaw
+that gets the model right is worth the break. Each one is still logged here and
+bumps the contract version. Once a real consumer ships, freeze hardens to the
+default above.
+
+**Thaw log**
+
+- **v1 → v2** — added `agent_id` and `agent_type` (both optional, either kind).
+  Breaking only because `additionalProperties: false` rejects unknown keys, so a
+  v1 validator fails a v2 line. On the wire both are `omitempty`, so any event
+  that names no subagent is byte-identical to v1. See
+  [ADR 0004](../docs/adr/0004-agent-identity-as-core-fields.md).
 
 ## Non-goals
 

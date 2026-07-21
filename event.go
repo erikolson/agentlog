@@ -43,8 +43,20 @@ const (
 // because an observation carrying a witness is not a value this package can
 // represent, so it needs no runtime check and admits no bug.
 type Observation struct {
-	Stage   string // collection|llm_call|tool_call|safety|delivery
-	Actor   string // the proposer that produced the event
+	Stage string // collection|llm_call|tool_call|safety|delivery
+
+	// Actor identity. Actor is the kind of proposer — "agent" for the
+	// top-level loop, "subagent" for a nested one. AgentID and AgentType name
+	// the specific instance and its type (e.g. "Explore") when the harness
+	// reports them; both are empty for the top-level agent. They exist because
+	// subagents run concurrently, so one log interleaves many actors by ts and
+	// AgentID is the only key that demuxes them. Parent/tree structure is never
+	// stamped here — it is reconstructed downstream from spawn events. See
+	// docs/adr/0004-agent-identity-as-core-fields.md.
+	Actor     string
+	AgentID   string
+	AgentType string
+
 	Summary string // enough to reproduce/verify, never the full payload
 	DurMS   int64
 	Status  string // success|error|timeout|fallback|ok
@@ -72,6 +84,13 @@ type Verdict struct {
 	Enforce     string // block|warn|record
 	Summary     string // enough to reproduce/verify, never the full payload
 
+	// AgentID and AgentType qualify Actor exactly as they do on an Observation:
+	// when the adjudicated work was produced by a subagent, they name which one.
+	// Normally empty, since verdicts come from an enforcement layer rather than
+	// the session hook.
+	AgentID   string
+	AgentType string
+
 	// Attrs carries domain annotations, string→string: the contract's only
 	// extension point. Empty stays off the wire.
 	Attrs map[string]string
@@ -92,8 +111,16 @@ type wire struct {
 	Kind  string    `json:"kind"`
 
 	// Observation fields.
-	Stage   string `json:"stage,omitempty"`
-	Actor   string `json:"actor,omitempty"`
+	Stage string `json:"stage,omitempty"`
+
+	// Actor identity — shared by both kinds. actor rides in the observation
+	// slot but a verdict emits it too; agent_id/agent_type sit beside it. All
+	// three are omitempty, so an event that names no subagent is byte-identical
+	// to what contract v1 emitted.
+	Actor     string `json:"actor,omitempty"`
+	AgentID   string `json:"agent_id,omitempty"`
+	AgentType string `json:"agent_type,omitempty"`
+
 	Summary string `json:"summary,omitempty"`
 	DurMS   int64  `json:"dur_ms,omitempty"`
 	Status  string `json:"status,omitempty"`
@@ -139,13 +166,15 @@ func Open(dir, runID string) (*Logger, func() error, error) {
 // EmitObservation appends one observation to the log.
 func (l *Logger) EmitObservation(o Observation) error {
 	return l.emit(wire{
-		Kind:    kindObservation,
-		Stage:   o.Stage,
-		Actor:   o.Actor,
-		Summary: o.Summary,
-		DurMS:   o.DurMS,
-		Status:  o.Status,
-		Attrs:   o.Attrs,
+		Kind:      kindObservation,
+		Stage:     o.Stage,
+		Actor:     o.Actor,
+		AgentID:   o.AgentID,
+		AgentType: o.AgentType,
+		Summary:   o.Summary,
+		DurMS:     o.DurMS,
+		Status:    o.Status,
+		Attrs:     o.Attrs,
 	})
 }
 
@@ -157,6 +186,8 @@ func (l *Logger) EmitVerdict(v Verdict) error {
 		Verdict:     v.Verdict,
 		Witness:     v.Witness,
 		Actor:       v.Actor,
+		AgentID:     v.AgentID,
+		AgentType:   v.AgentType,
 		Adjudicator: v.Adjudicator,
 		Enforce:     v.Enforce,
 		Summary:     v.Summary,
